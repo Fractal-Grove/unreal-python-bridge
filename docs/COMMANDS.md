@@ -71,19 +71,30 @@ output.
 **For a `MaterialInstanceConstant`:** the parent, plus every overridden parameter
 value. Complete and reliable.
 
-The graph walk has a real limit — see [LIMITATIONS.md](LIMITATIONS.md). When it
-can't enumerate, the JSON says so explicitly in `graph.note` and still reports
-the node count UE claims.
+The graph walk has a real limit — see [LIMITATIONS.md](LIMITATIONS.md). It reaches
+only nodes that feed a connected output, so always read `graph.node_count`
+against `graph.diag.num_expressions` before assuming the dump is complete. When
+nothing walks at all, the JSON says so explicitly in `graph.note` rather than
+implying an empty material.
 
 ## `blueprint`
 
 Dump to `_exports/<name>.blueprint.json`. Args: `asset`, optional `props` (a list
 of CDO property names to read).
 
-Returns the generated class, its parent class, and the component tree from the
-`SubobjectDataSubsystem` — component classes, variable names, and any static or
-skeletal mesh they reference. Pass `props` to also read named defaults off the
-Class Default Object.
+| field | source |
+| --- | --- |
+| `parent_class` | asset-registry `ParentClass` tag — the **immediate** parent, which may itself be a Blueprint |
+| `native_parent_class` | asset-registry `NativeParentClass` tag |
+| `blueprint_type` | `BPTYPE_Normal`, `BPTYPE_FunctionLibrary`, `BPTYPE_Interface`, … |
+| `native_type` | `unreal.get_type_from_class` — nearest **native** ancestor |
+| `generated_class` | the loaded `<Name>_C` |
+| `components` | component tree from `SubobjectDataSubsystem`: class, variable name, and any static/skeletal mesh referenced |
+| `cdo_props` | only if you pass `props` |
+
+A `component_count` of `0` is usually correct rather than a failure — check
+`blueprint_type`, since function/macro libraries and interfaces have no component
+tree.
 
 Event-graph logic is not extracted.
 

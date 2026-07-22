@@ -71,10 +71,28 @@ def _class_name(asset_data):
     return "?"
 
 
+def _clean_class_tag(value):
+    """Asset-registry class tags arrive wrapped:
+        /Script/CoreUObject.Class'/Script/Engine.Actor'
+    Return just the inner object path, leaving anything unwrapped as-is."""
+    if "'" in value:
+        inner = value.split("'")
+        if len(inner) >= 2 and inner[1]:
+            return inner[1]
+    return value
+
+
 def _ensure_dir(p):
     if not os.path.isdir(p):
         os.makedirs(p)
     return p
+
+
+# Create the output directory at import, not just in main(). The commands write
+# into EXPORTS directly, and they must not depend on main() having run first --
+# a batch step, or a caller importing this module to drive cmd_* itself, would
+# otherwise fail on a missing directory.
+_ensure_dir(EXPORTS)
 
 
 # --------------------------------------------------------------------------- #
@@ -414,9 +432,28 @@ def cmd_blueprint(args):
     if gen:
         info["generated_class"] = str(gen)
         try:
-            info["parent_class"] = str(gen.get_super_class())
+            # Nearest NATIVE ancestor, as a Python type. Cannot express a BP
+            # parented to another BP -- the registry tags below can.
+            info["native_type"] = str(unreal.get_type_from_class(gen))
         except Exception:
             pass
+
+    # Parent class comes from the asset registry, not from the class object.
+    # BlueprintGeneratedClass has no get_super_class() in UE 5.x Python, and the
+    # Blueprint asset rejects get_editor_property('parent_class') outright --
+    # both raise, which is why this used to come back empty. The registry tags
+    # are authoritative and give the immediate parent even when it is itself a
+    # Blueprint.
+    try:
+        ad = _asset_registry().get_asset_by_object_path(path + "." + shortname)
+        for tag, key in (("ParentClass", "parent_class"),
+                         ("NativeParentClass", "native_parent_class"),
+                         ("BlueprintType", "blueprint_type")):
+            v = ad.get_tag_value(tag)
+            if v:
+                info[key] = _clean_class_tag(str(v))
+    except Exception as e:
+        info["parent_class_error"] = repr(e)
 
     # component tree via the SubobjectDataSubsystem (the 5.x-correct path)
     try:

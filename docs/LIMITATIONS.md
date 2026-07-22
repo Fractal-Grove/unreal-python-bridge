@@ -1,38 +1,61 @@
 # Known limits
 
 Written down honestly, because most of these look like bugs until you know they
-aren't. Verified against UE 5.5–5.7; run `pwsh headless/ue.ps1 probe` to see what
-your build exposes.
+aren't. The numbers and API failures below were **measured on UE 5.7.4** against a
+17,000-asset project; differences on earlier engines are called out where they
+matter. Run `pwsh headless/ue.ps1 probe` to see what your build exposes.
 
 ---
 
-## Material node topology is not extractable from Python
+## Material node graphs come back partial, never complete
 
-The engine will not hand back a material's node graph:
+The engine will not enumerate a material's nodes for you. `UMaterial.expressions`
+is **protected** from the Python API — on 5.7, all three of these raise:
 
-- `UMaterial.expressions` is **protected** from the Python API — you cannot
-  enumerate the nodes directly.
-- The bridge works around this by walking *backwards* from each connected
-  material-output property (base colour, roughness, normal, …) via
-  `get_inputs_for_material_expression`. That works on ordinary materials.
-- It returns **nothing** on any material with `use_material_attributes = True` —
-  everything routes through a single attributes pin, so there are no per-property
-  connections to walk.
+```
+mat.expressions                          -> AttributeError
+mat.get_expressions()                    -> AttributeError
+mat.get_editor_property("expressions")   -> Exception: Property 'Expressions' ...
+```
 
-What you *do* get reliably: every parameter with its default, the resolved
+So the bridge walks the graph *backwards* instead, from every connected material
+output property (base colour, roughness, normal, … and the material-attributes
+pin) via `get_inputs_for_material_expression`.
+
+**That recovers most of the graph, but never all of it.** Measured on 5.7:
+
+| material | nodes walked | nodes the engine reports |
+| --- | --- | --- |
+| plain, small | 25 | 27 |
+| plain, small | 21 | 23 |
+| attribute-routed | 88 | 99 |
+| attribute-routed | 274 | 297 |
+
+The shortfall is definitional: a backwards walk from the outputs can only reach
+nodes that **feed an output**. Disconnected experiments, orphaned branches and
+comment boxes are invisible to it. `graph.diag.num_expressions` (what the engine
+says) against `graph.node_count` (what was walked) tells you the size of the gap
+for any given material — always check both before assuming you have the whole
+picture.
+
+> **Engine-version note.** On UE 5.6 and earlier, materials with
+> `use_material_attributes = True` walked to **zero** nodes — everything routed
+> through one attributes pin the walk couldn't follow. On 5.7 they walk fine
+> (the table above). The zero case is still handled: when nothing walks but the
+> engine reports nodes, the JSON says so explicitly in `graph.note` rather than
+> pretending the material is empty.
+
+What you get reliably, regardless: every parameter with its default, the resolved
 `used_textures` list, shader statistics, and — on material instances — the parent
-chain and every override. That's usually enough to port or reason about a
-material.
+chain and every override.
 
-When it isn't, the JSON tells you so in `graph.note` rather than pretending the
-material has zero nodes.
+### Getting the complete graph anyway
 
-### Getting exact topology anyway
-
-The editor's copy buffer *is* the graph. Open the material, select all in the
-graph editor, Ctrl+C, paste into a text file — that text is **T3D**, the engine's
-own object-serialization format, with every expression node and every connection
-in it. Then:
+The editor's copy buffer *is* the graph — all of it, including the nodes no
+backwards walk can reach. Open the material, select all in the graph editor,
+Ctrl+C, paste into a text file. That text is **T3D**, the engine's own
+object-serialization format, with every expression node and every connection in
+it. Then:
 
 ```bash
 python tools/parse_t3d.py graph.txt
@@ -53,16 +76,31 @@ understand, not a sweep across the whole content tree.
 
 ## Blueprints: structure yes, logic no
 
-`blueprint` returns the generated class, its parent, the component tree (classes,
-variable names, mesh references) and any CDO defaults you ask for. **Event-graph
-and function-graph logic is not extracted.** The same T3D copy-paste trick works
-on Blueprint graphs if you need the nodes, though `parse_t3d.py` is written for
+`blueprint` returns the parent class, the component tree (classes, variable
+names, mesh references) and any CDO defaults you ask for. **Event-graph and
+function-graph logic is not extracted.** The same T3D copy-paste trick works on
+Blueprint graphs if you need the nodes, though `parse_t3d.py` is written for
 material graphs and would need extending.
 
-Note also that the `Blueprint` asset itself locks down `parent_class` /
-`generated_class` / the SCS in UE 5.x Python — the bridge loads the generated
-`<Name>_C` class and reads its CDO instead. That's why you sometimes see a
-`generated_class` field and no `parent_class`: the `_C` load failed.
+Getting the parent class takes three separate dead ends into account — all of
+these fail on 5.7:
+
+```
+bp.get_editor_property("parent_class")      -> Exception: Failed to find property
+bp.get_editor_property("generated_class")   -> Exception: Failed to find property
+generated_class.get_super_class()           -> AttributeError
+```
+
+The `Blueprint` asset locks those down, and `BlueprintGeneratedClass` has no
+`get_super_class` in the Python API at all. The bridge therefore reads the
+**asset registry tags** (`ParentClass`, `NativeParentClass`, `BlueprintType`),
+which are authoritative and — unlike `unreal.get_type_from_class`, reported
+separately as `native_type` — give the *immediate* parent even when a Blueprint
+is parented to another Blueprint.
+
+A `component_count` of `0` is usually not an error. Check `blueprint_type`:
+`BPTYPE_FunctionLibrary`, `BPTYPE_Interface` and `BPTYPE_MacroLibrary` genuinely
+have no component tree.
 
 ---
 

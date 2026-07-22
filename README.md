@@ -166,11 +166,12 @@ directly. Running two editors at once? Give each project its own
 Honest, and worth reading before you file a bug: **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**.
 The short version —
 
-- **Material node topology is not extractable from Python.** The expression list
-  is protected, and attribute-routed materials return nothing from a per-property
-  walk. Parameters, resolved textures and shader stats *are* available. For exact
-  topology, copy the graph in-editor and run `tools/parse_t3d.py` on the pasted
-  T3D.
+- **Material node graphs come back partial.** The expression list is protected, so
+  the bridge walks backwards from the connected outputs — which reaches most of
+  the graph (measured 25/27, 274/297 on 5.7) but structurally cannot see nodes
+  that don't feed an output. Compare `graph.node_count` against
+  `graph.diag.num_expressions`. For the complete graph, copy it in-editor and run
+  `tools/parse_t3d.py` on the pasted T3D.
 - **Blueprint event-graph logic is not extracted** — parent class, component tree
   and CDO defaults are.
 - **Meshes export as FBX**, not glTF; UE's `GLTFExporter` is abstract and unusable
