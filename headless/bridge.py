@@ -191,7 +191,7 @@ def cmd_texture(args):
         ok, why = _export_via_task(obj, out, "TextureExporterPNG")
         if not ok:
             # fall back to the generic exporter (may yield .TGA/.EXR next to out)
-            ok2, why2 = _export_generic(obj, outdir)
+            ok2, why2 = _export_generic(p, outdir)
             results.append({"asset": p, "ok": ok2, "out": outdir, "why": why + " | " + why2})
         else:
             results.append({"asset": p, "ok": True, "out": out})
@@ -403,6 +403,82 @@ def _walk_material_graph(mat, mel):
     return graph
 
 
+def cmd_graph(args):
+    """
+    Export an asset's COMPLETE node graph as T3D text -- the answer to "the
+    material dump only shows some of my nodes".
+
+    args:
+      asset  : /Game/... path (Material, MaterialFunction; also works on other
+               asset types that support text export)
+      outdir : subfolder under _exports (default 'graphs')
+      parse  : also write a parsed .graph.json summary (default True)
+
+    Unlike `material`, this does not walk anything -- it asks the engine to
+    serialize the asset to text, so disconnected nodes, comment boxes and
+    attribute-routed graphs all come through. Run tools/parse_t3d.py on the
+    result (or read the .graph.json this writes).
+
+    Implementation note, learned the hard way: use an AssetExportTask with a
+    .T3D filename and NO explicit exporter, with automated=True/prompt=False.
+    Do NOT reach for AssetTools.export_assets_with_dialog or set an exporter by
+    hand -- the only Material exporter registered on 5.7 is GLTFMaterialExporter,
+    which opens a modal options window and hangs a headless run forever.
+    """
+    path = args["asset"]
+    obj = unreal.load_asset(path)
+    if obj is None:
+        return {"ok": False, "why": "load failed", "asset": path}
+
+    outdir = _ensure_dir(os.path.join(EXPORTS, args.get("outdir", "graphs")))
+    base = path.split("/")[-1]
+    out = os.path.join(outdir, base + ".T3D")
+
+    ok, why = _export_via_task(obj, out, None)
+    result = {"ok": ok, "asset": path, "file": out if ok else None, "why": why}
+    if not ok:
+        return result
+
+    result["bytes"] = os.path.getsize(out)
+
+    if args.get("parse", True):
+        try:
+            nodes, outputs, out_props, dialect = _load_t3d_parser().parse(out)
+            summary = {
+                "dialect": dialect,
+                "node_count": len(nodes),
+                "type_tally": _tally(n["type"] for n in nodes.values()),
+                "outputs": outputs,
+                "nodes": nodes,
+            }
+            jf = os.path.join(outdir, base + ".graph.json")
+            with open(jf, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2)
+            result["parsed"] = {"file": jf, "node_count": len(nodes),
+                                "outputs": list(outputs)}
+        except Exception as e:
+            result["parse_error"] = repr(e)
+
+    return result
+
+
+def _tally(values):
+    counts = {}
+    for v in values:
+        counts[v] = counts.get(v, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+def _load_t3d_parser():
+    """Import tools/parse_t3d.py as a module (it sits outside this package)."""
+    import importlib.util
+    p = os.path.join(os.path.dirname(HERE), "tools", "parse_t3d.py")
+    spec = importlib.util.spec_from_file_location("parse_t3d", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def cmd_blueprint(args):
     """
     Introspect a Blueprint: parent class, component tree (SCS), and selected
@@ -513,7 +589,10 @@ def cmd_blueprint(args):
 # export plumbing
 # --------------------------------------------------------------------------- #
 def _export_via_task(obj, out_path, exporter_name):
-    if not hasattr(unreal, exporter_name):
+    """exporter_name=None lets UE pick the exporter from the file extension --
+    that is how the .T3D graph export works. automated/prompt are what keep any
+    exporter's options window from opening."""
+    if exporter_name and not hasattr(unreal, exporter_name):
         return False, "no exporter " + exporter_name
     try:
         task = unreal.AssetExportTask()
@@ -522,20 +601,30 @@ def _export_via_task(obj, out_path, exporter_name):
         task.set_editor_property("automated", True)
         task.set_editor_property("prompt", False)
         task.set_editor_property("replace_identical", True)
-        exporter_cls = getattr(unreal, exporter_name)
-        task.set_editor_property("exporter", exporter_cls())
+        if exporter_name:
+            exporter_cls = getattr(unreal, exporter_name)
+            task.set_editor_property("exporter", exporter_cls())
         ok = unreal.Exporter.run_asset_export_task(task)
         return bool(ok) and os.path.exists(out_path), ("run_asset_export_task=%s" % ok)
     except Exception as e:
         return False, repr(e)
 
 
-def _export_generic(obj, outdir):
-    """AssetTools.export_assets -- also the way to get full material node graphs
-    as T3D text, engine content included."""
+def _export_generic(asset_path, outdir):
+    """Fallback exporter: AssetTools.export_assets.
+
+    Takes asset PATH STRINGS, not loaded objects -- the signature is
+    `export_assets(assets_to_export: Array[str], export_path: str)`. Passing
+    objects raises a parameter-conversion TypeError.
+
+    Do NOT swap this for `export_assets_with_dialog`, and do not call either on a
+    Material: the only Material exporter registered on 5.7 is GLTFMaterialExporter,
+    which opens a modal options window. In a headless run that hangs the process
+    with no one to click it.
+    """
     try:
         tools = unreal.AssetToolsHelpers.get_asset_tools()
-        tools.export_assets([obj], outdir)
+        tools.export_assets([asset_path], outdir)
         return True, "export_assets ok"
     except Exception as e:
         return False, repr(e)
@@ -600,6 +689,7 @@ COMMANDS = {
     "texture": cmd_texture,
     "mesh": cmd_mesh,
     "material": cmd_material,
+    "graph": cmd_graph,
     "blueprint": cmd_blueprint,
     "batch": cmd_batch,
 }

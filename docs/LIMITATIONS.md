@@ -7,7 +7,12 @@ matter. Run `pwsh headless/ue.ps1 probe` to see what your build exposes.
 
 ---
 
-## Material node graphs come back partial, never complete
+## The `material` command's node walk is partial
+
+> **This one has a full solution — it is not a dead end.** The `graph` command
+> dumps the complete node graph via T3D, and `tools/parse_t3d.py` parses it into
+> nodes and edges. See **[MATERIAL-GRAPHS.md](MATERIAL-GRAPHS.md)**. What follows
+> is why the *API* route alone isn't enough.
 
 The engine will not enumerate a material's nodes for you. `UMaterial.expressions`
 is **protected** from the Python API — on 5.7, all three of these raise:
@@ -49,28 +54,21 @@ What you get reliably, regardless: every parameter with its default, the resolve
 `used_textures` list, shader statistics, and — on material instances — the parent
 chain and every override.
 
-### Getting the complete graph anyway
+### Getting the complete graph
 
-The editor's copy buffer *is* the graph — all of it, including the nodes no
-backwards walk can reach. Open the material, select all in the graph editor,
-Ctrl+C, paste into a text file. That text is **T3D**, the engine's own
-object-serialization format, with every expression node and every connection in
-it. Then:
+One command, no editor interaction:
 
-```bash
-python tools/parse_t3d.py graph.txt
+```powershell
+pwsh headless/ue.ps1 graph -ArgsJson '{"asset":"/Game/Art/M_Foo"}'
 ```
 
-which prints a compact node list plus edges: node type, the properties that carry
-meaning (parameter names, constants, defaults, referenced material functions),
-and each input pin resolved back to the node feeding it. Enough to trace the real
-blend logic without writing a shader compiler.
+It asks the engine to serialize the asset to **T3D** — its own text
+object-format, containing every expression and every connection — then parses it
+into a node list, edges and material outputs. On `DefaultMaterial` that is 41
+nodes against the API walk's 35.
 
-Bulk alternative: `AssetTools.export_assets` writes the same full node graphs
-(engine content included) alongside texture PNGs, with no manual copy-paste. The
-tradeoff is that the copy route needs the editor open and a human at the
-keyboard — a deliberate escape hatch for one material you actually need to
-understand, not a sweep across the whole content tree.
+Full detail, including the two incompatible T3D dialects and the modal exporter
+dialog that will hang a headless run: **[MATERIAL-GRAPHS.md](MATERIAL-GRAPHS.md)**.
 
 ---
 

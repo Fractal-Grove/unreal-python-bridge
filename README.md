@@ -23,6 +23,58 @@ PowerShell driver.
 
 ---
 
+## Reading material node graphs
+
+Worth calling out up front, because it is the question people arrive with:
+**yes, this dumps and parses complete material node graphs** — every node, every
+connection, including disconnected branches and comment boxes.
+
+```powershell
+pwsh headless/ue.ps1 graph -ArgsJson '{"asset":"/Game/Art/M_Foo"}'
+```
+
+writes the raw `M_Foo.T3D` and a parsed `M_Foo.graph.json` (nodes, edges,
+material outputs). Or run the parser yourself for a human-readable view:
+
+```
+$ python tools/parse_t3d.py _exports/graphs/DefaultMaterial.T3D
+
+dialect: export   nodes: 41
+
+---- material outputs ----
+  BaseColor              <- MaterialExpressionMultiply_18
+  Roughness              <- MaterialExpressionClamp_3
+
+---- nodes ----
+MaterialExpressionClamp_3           Clamp                    [Input<-MaterialExpressionAdd_9]
+MaterialExpressionTextureSample_16  TextureSample Texture=T_Default_Material_Grid_N  [Coordinates<-MaterialExpressionDivide_11]
+```
+
+`--json` for machine-readable, `--dot` for Graphviz.
+
+This is a genuinely better picture than the Python API can give you: on
+`DefaultMaterial` the T3D route recovers **41 nodes** where walking the API
+reaches 35. Full explanation of both routes, when to use each, and the modal
+dialog that will hang your editor if you export a material the wrong way:
+**[docs/MATERIAL-GRAPHS.md](docs/MATERIAL-GRAPHS.md)**.
+
+---
+
+## Repo layout
+
+```
+live/          in-editor socket server + host client + fallback launcher
+headless/      UnrealEditor-Cmd driver (ue.ps1) and the in-engine command set
+tools/         parse_t3d.py -- material graph parser (T3D -> nodes + edges)
+editor_hook/   init_unreal.py, copied into your project by install.py
+examples/      snippets to run against the live editor
+lib/           engine/project auto-discovery shared by the PowerShell scripts
+docs/          SETUP, COMMANDS, MATERIAL-GRAPHS, LIMITATIONS, PROTOCOL
+install.py     wires the bridge into a project
+```
+
+---
+
 ## The two bridges
 
 |                 | **live** (`live/`)                              | **headless** (`headless/`)              |
@@ -120,6 +172,7 @@ pwsh headless/ue.ps1 manifest -ArgsJson '{"class":"Material","contains":"Wall"}'
 pwsh headless/ue.ps1 texture  -ArgsJson '{"asset":"/Game/Art/T_Foo_D"}'
 pwsh headless/ue.ps1 mesh     -ArgsJson '{"asset":"/Game/Art/SM_Foo"}'
 pwsh headless/ue.ps1 material -ArgsJson '{"asset":"/Game/Art/M_Foo"}'
+pwsh headless/ue.ps1 graph    -ArgsJson '{"asset":"/Game/Art/M_Foo"}'   # full node graph
 pwsh headless/ue.ps1 blueprint -ArgsJson '{"asset":"/Game/BP_Foo"}'
 ```
 
@@ -166,14 +219,13 @@ directly. Running two editors at once? Give each project its own
 Honest, and worth reading before you file a bug: **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**.
 The short version —
 
-- **Material node graphs come back partial.** The expression list is protected, so
-  the bridge walks backwards from the connected outputs — which reaches most of
-  the graph (measured 25/27, 274/297 on 5.7) but structurally cannot see nodes
-  that don't feed an output. Compare `graph.node_count` against
-  `graph.diag.num_expressions`. For the complete graph, copy it in-editor and run
-  `tools/parse_t3d.py` on the pasted T3D.
-- **Blueprint event-graph logic is not extracted** — parent class, component tree
-  and CDO defaults are.
+- **The `material` command's node walk is partial by design** — it reaches only
+  nodes that feed a connected output. This is not a dead end: use the `graph`
+  command for complete topology (see above). Compare `graph.node_count` against
+  `graph.diag.num_expressions` to see what any given walk missed.
+- **Blueprint event-graph logic is not parsed** — parent class, component tree and
+  CDO defaults are. Blueprints *do* export to T3D via the same `graph` route if
+  you want the raw graph text; `parse_t3d.py` only understands material nodes.
 - **Meshes export as FBX**, not glTF; UE's `GLTFExporter` is abstract and unusable
   from Python.
 - NullRHI is on by default for headless runs. If an export comes back empty,

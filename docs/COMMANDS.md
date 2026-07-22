@@ -71,11 +71,42 @@ output.
 **For a `MaterialInstanceConstant`:** the parent, plus every overridden parameter
 value. Complete and reliable.
 
-The graph walk has a real limit — see [LIMITATIONS.md](LIMITATIONS.md). It reaches
-only nodes that feed a connected output, so always read `graph.node_count`
-against `graph.diag.num_expressions` before assuming the dump is complete. When
-nothing walks at all, the JSON says so explicitly in `graph.note` rather than
-implying an empty material.
+The graph walk here reaches only nodes that feed a connected output, so read
+`graph.node_count` against `graph.diag.num_expressions` before assuming the dump
+is complete. When nothing walks at all, the JSON says so in `graph.note` rather
+than implying an empty material.
+
+**For complete topology use the [`graph`](#graph) command instead** — this one is
+for parameters, bindings and stats.
+
+## `graph`
+
+Export an asset's **complete** node graph as T3D, and parse it. This is the
+answer to "the `material` dump only shows some of my nodes" — see
+[MATERIAL-GRAPHS.md](MATERIAL-GRAPHS.md) for the full story.
+
+| arg | default | meaning |
+| --- | --- | --- |
+| `asset` | — | `/Game/...` path (Material, MaterialFunction; other text-exportable assets work too) |
+| `outdir` | `graphs` | subfolder under `_exports` |
+| `parse` | `true` | also write a parsed `<name>.graph.json` |
+
+```powershell
+pwsh headless/ue.ps1 graph -ArgsJson '{"asset":"/Game/Art/M_Foo"}'
+```
+
+Writes `_exports/graphs/M_Foo.T3D` (raw) and `M_Foo.graph.json` (nodes with
+types, properties and input edges, plus which node drives each material output).
+
+Unlike `material`, nothing is walked — disconnected nodes, comment boxes and
+attribute-routed graphs all come through. On `/Engine/EngineMaterials/DefaultMaterial`
+it recovers 41 nodes where the API walk reaches 35.
+
+> Do not try to reproduce this with `AssetTools.export_assets_with_dialog` or by
+> naming an exporter: the only Material exporter registered on 5.7 is
+> `GLTFMaterialExporter`, which opens a **modal options window** and will hang a
+> headless run indefinitely. The command relies on letting UE pick the exporter
+> from the `.T3D` extension with `automated=True`.
 
 ## `blueprint`
 
